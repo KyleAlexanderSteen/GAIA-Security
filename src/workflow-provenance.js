@@ -157,7 +157,7 @@ export function verifyWorkflowEventChain(envelopes) {
   for (let index = 0; index < envelopes.length; index += 1) {
     const envelope = envelopes[index];
     const line = index + 1;
-    if (!envelope || typeof envelope !== "object" || !envelope.event) {
+    if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
       errors.push(`Envelope ${line} is malformed.`);
       continue;
     }
