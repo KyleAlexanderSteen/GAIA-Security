@@ -155,7 +155,7 @@ test("recovers a durably logged outcome into the independent checkpoint without 
   assert.equal(recovered.status, "recovered");
   assert.equal(recovered.outcome, "completed");
   assert.equal(calls, 1);
-  assert.equal(checkpoint.actions.get(`${input.namespace}\\0${input.actionId}`).kind, "outcome");
+  assert.equal((await checkpoint.readAction(input.namespace, input.actionId)).kind, "outcome");
   assert.equal(workflow.isBlocked(input.namespace), false);
 });
 
@@ -174,7 +174,7 @@ test("recovery refuses to guess or execute when target outcome is unknown", asyn
     actionType: "protected.write", intentHash, ledgerRecordHash: intentRecord.recordHash,
     createdAt: new Date().toISOString(), entryHash: "b".repeat(64)
   };
-  checkpoint.actions.set(`${namespace}\\0${actionId}`, intentEntry);
+  checkpoint.actions.set([namespace, actionId].join("\\0"), intentEntry);
   let executed = false;
   const workflow = createProtectedWorkflow({ ledger, checkpoint, async executeAction() { executed = true; } });
   await assert.rejects(
