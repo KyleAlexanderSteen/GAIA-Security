@@ -9,6 +9,6 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/audit-ledger.js && node --check src/protected-workflow.js && node --test"
+    "check": "node --check src/audit-ledger.js && node --check src/protected-workflow.js && node --check src/workflow-provenance.js && node --check src/workflow-provenance-store.js && node --test"
   }
 }
