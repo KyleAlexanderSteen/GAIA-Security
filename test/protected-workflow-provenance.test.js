@@ -147,4 +147,21 @@ test("blocks namespace when outcome provenance persistence fails after execution
   }), /provenance could not be persisted/);
   assert.equal(executions, 1);
   assert.equal(workflow.isBlocked("tenant-provenance/fail-outcome"), true);
+
+  // Recovery must close the missing provenance event without re-running the action.
+  const recovered = await workflow.recover({
+    namespace: "tenant-provenance/fail-outcome",
+    actionId: "action-provenance-fail-outcome"
+  });
+  assert.equal(recovered.status, "recovered");
+  assert.equal(executions, 1);
+  assert.equal(workflow.isBlocked("tenant-provenance/fail-outcome"), false);
+  const events = (await ledger.listRecords())
+    .filter((record) => record.eventType === "workflow.provenance")
+    .map((record) => record.payload.envelope.event);
+  assert.deepEqual(events.map((event) => event.action), [
+    "protected-action.intent-recorded",
+    "protected-action.outcome-reconciled"
+  ]);
+  assert.equal((await provenanceStore.verify()).valid, true);
 });
