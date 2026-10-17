@@ -51,8 +51,12 @@ export function createWorkflowProvenanceStore({ ledger }) {
       // Re-verify the ledger after the durable write. A failed check rejects the
       // append result so callers must not treat the event as trusted evidence.
       const checked = await verify();
-      if (checked.status === "invalid" || checked.status === "unverified" || checked.status === "partially_verified") {
-        throw new Error(`Persisted workflow provenance is not fully verified: ${checked.status}.`);
+      // "unverified" is a valid explicit evidence state (for example, when the
+      // event's actor identity is not independently attested). Persist it without
+      // upgrading it to trusted evidence. Structural/digest failures and causal or
+      // sequence gaps still reject the append.
+      if (checked.status === "invalid" || checked.status === "partially_verified") {
+        throw new Error(`Persisted workflow provenance failed integrity/completeness checks: ${checked.status}.`);
       }
       return { record, envelope, verification: checked };
     });
