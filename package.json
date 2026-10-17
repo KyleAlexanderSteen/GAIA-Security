@@ -1,0 +1,14 @@
+{
+  "name": "@gaia/security-audit-ledger",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Experimental local Stage 0 audit-ledger prototype for GAIA; not a production security service.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/audit-ledger.js && node --test"
+  }
+}
