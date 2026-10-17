@@ -179,6 +179,13 @@ export function createAuditLedger({ ledgerPath, anchorPath, writerId, privateKey
     return operation;
   }
 
+  async function listRecords() {
+    // Expose verified records only; callers cannot use unverified JSONL as recovery evidence.
+    await verify();
+    const records = await readLines(logPath);
+    return records.map((record) => structuredClone(record));
+  }
+
   async function anchorEpoch(epochId) {
     const state = await verify();
     const records = await readLines(logPath);
@@ -225,7 +232,7 @@ export function createAuditLedger({ ledgerPath, anchorPath, writerId, privateKey
     return { valid: true, anchorCount: anchors.length, anchors: verified };
   }
 
-  return Object.freeze({ append, verify, anchorEpoch, verifyAnchors });
+  return Object.freeze({ append, verify, listRecords, anchorEpoch, verifyAnchors });
 }
 
 export const auditLedgerInternals = Object.freeze({ canonicalize, merkleRoot, ZERO_HASH });

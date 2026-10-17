@@ -6,6 +6,7 @@ function fakeLedger({ failOutcome = false } = {}) {
   const records = [];
   return {
     records,
+    async listRecords() { return records.map((record) => structuredClone(record)); },
     async append(record) {
       if (failOutcome && record.eventType === "protected-action.outcome") throw new Error("ledger outcome write failed");
       const item = { ...record, recordHash: `local-${records.length + 1}` };
@@ -22,15 +23,17 @@ function fakeCheckpoint({ failIntent = false, loseFirstAck = false, failOutcome 
   const heads = new Map();
   const actions = new Map();
   let calls = 0;
+  let outcomeUnavailable = failOutcome;
   const key = (namespace, actionId) => `${namespace}\0${actionId}`;
   return {
     actions,
+    setOutcomeAvailable(value) { outcomeUnavailable = !value; },
     async readHead(namespace) { return heads.get(namespace) ?? { version: 0, hash: "0".repeat(64) }; },
     async readAction(namespace, actionId) { return actions.get(key(namespace, actionId)) ?? null; },
     async compareAndSet({ namespace, expectedVersion, entry }) {
       calls += 1;
       if (entry.kind === "intent" && failIntent) throw new Error("checkpoint unavailable");
-      if (entry.kind === "outcome" && failOutcome) throw new Error("outcome checkpoint unavailable");
+      if (entry.kind === "outcome" && outcomeUnavailable) throw new Error("outcome checkpoint unavailable");
       const head = heads.get(namespace) ?? { version: 0, hash: "0".repeat(64) };
       if (head.version !== expectedVersion) return { acknowledged: false };
       const next = { ...entry, head: { version: head.version + 1, hash: entry.entryHash } };
@@ -132,4 +135,55 @@ test("blocks namespace if the local outcome audit write fails after action execu
   );
   assert.equal(calls, 1);
   assert.equal(workflow.isBlocked("tenant-a/ledger-a"), true);
+});
+
+
+test("recovers a durably logged outcome into the independent checkpoint without re-executing", async () => {
+  const ledger = fakeLedger();
+  const checkpoint = fakeCheckpoint({ failOutcome: true });
+  let calls = 0;
+  const workflow = createProtectedWorkflow({
+    ledger, checkpoint,
+    async executeAction() { calls += 1; return { committed: true }; }
+  });
+  const input = { namespace: "tenant-recovery/ledger-a", actionId: "action-recover-001", actionType: "protected.write", payload: { item: 7 } };
+  await assert.rejects(workflow.run(input), /namespace blocked for reconciliation/);
+  assert.equal(calls, 1);
+  checkpoint.setOutcomeAvailable(true);
+
+  const recovered = await workflow.recover({ namespace: input.namespace, actionId: input.actionId });
+  assert.equal(recovered.status, "recovered");
+  assert.equal(recovered.outcome, "completed");
+  assert.equal(calls, 1);
+  assert.equal((await checkpoint.readAction(input.namespace, input.actionId)).kind, "outcome");
+  assert.equal(workflow.isBlocked(input.namespace), false);
+});
+
+test("recovery refuses to guess or execute when target outcome is unknown", async () => {
+  const ledger = fakeLedger();
+  const checkpoint = fakeCheckpoint();
+  const namespace = "tenant-recovery/ledger-b";
+  const actionId = "action-recover-002";
+  const intentHash = "a".repeat(64);
+  const intentRecord = await ledger.append({
+    epochId: namespace, eventType: "protected-action.intent",
+    payload: { actionId, actionType: "protected.write", intentHash, payload: { item: 9 } }
+  });
+  const intentEntry = {
+    schemaVersion: 1, kind: "intent", namespace, actionId,
+    actionType: "protected.write", intentHash, ledgerRecordHash: intentRecord.recordHash,
+    createdAt: new Date().toISOString(), entryHash: "b".repeat(64)
+  };
+  checkpoint.actions.set([namespace, actionId].join("\0"), intentEntry);
+  let executed = false;
+  const workflow = createProtectedWorkflow({ ledger, checkpoint, async executeAction() { executed = true; } });
+  await assert.rejects(
+    workflow.recover({
+      namespace, actionId,
+      async reconcileAction() { return { status: "unknown", evidence: { verified: false } }; }
+    }),
+    /outcome is unknown|cannot establish the action outcome/
+  );
+  assert.equal(executed, false);
+  assert.equal(workflow.isBlocked(namespace), true);
 });
