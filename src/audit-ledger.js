@@ -202,6 +202,9 @@ export function createAuditLedger({ ledgerPath, anchorPath, writerId, privateKey
   }
 
   async function verifyAnchors() {
+    // Never trust recordHash values for a Merkle check until every record's
+    // canonical body, chain link, digest, and signature have been verified.
+    await verify();
     const records = await readLines(logPath);
     const anchors = await readLines(checkpointPath);
     const verified = [];

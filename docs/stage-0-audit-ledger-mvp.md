@@ -10,7 +10,7 @@
 - Append-and-sync write path to a local JSON Lines file.
 - Verification of schema version, sequence, chain links, digest, and writer signature.
 - Signed Merkle checkpoints over records in an epoch.
-- Tests for append/verify, intent-before-simulated-action ordering, reopen/recovery, tampering, truncation, and checkpoint verification.
+- Tests for append/verify, intent-before-simulated-action ordering, reopen/recovery, tampering, truncation, and checkpoint verification. Checkpoint verification first validates the complete record chain and signatures, then validates each anchored Merkle root; the tests specifically cover tampering and removal of an anchored record.
 
 ## Explicit limits
 
