@@ -132,3 +132,22 @@ test("invalid evidence forces an invalid verification result", () => {
 test("rejects a non-finite value before creating an envelope", () => {
   assert.throws(() => createWorkflowEventEnvelope(event({ resource: { type: "x", id: NaN } })), /Canonical JSON/);
 });
+
+test("does not claim full verification when actor identity evidence is unverified", () => {
+  const result = verifyWorkflowEventChain(chain([event()]));
+  assert.equal(result.status, "unverified");
+  assert.ok(result.warnings.some((warning) => warning.includes("identity evidence")));
+});
+
+test("does not crash when a malformed envelope has a non-object event", () => {
+  const result = verifyWorkflowEventChain([{ event: null, previous_event_digest: "0".repeat(64), event_digest: "bad" }]);
+  assert.equal(result.status, "invalid");
+  assert.ok(result.errors.some((error) => error.includes("event must be an object")));
+});
+
+test("unverified evidence cannot be reported as fully verified", () => {
+  const result = verifyWorkflowEventChain(chain([
+    event({ evidence: [{ type: "source-record", reference_id: "unknown-1", state: "unverified" }] })
+  ]));
+  assert.equal(result.status, "unverified");
+});
