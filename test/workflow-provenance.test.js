@@ -156,3 +156,9 @@ test("unverified evidence cannot be reported as fully verified", () => {
   ]));
   assert.equal(result.status, "unverified");
 });
+
+test("does not crash when an envelope itself is null", () => {
+  const result = verifyWorkflowEventChain([null]);
+  assert.equal(result.status, "invalid");
+  assert.ok(result.errors.some((error) => error.includes("malformed")));
+});
