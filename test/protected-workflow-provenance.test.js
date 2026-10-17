@@ -99,3 +99,52 @@ test("action failure is recorded as a failed provenance outcome", async (t) => {
   assert.equal(events[1].failure.code, "PROTECTED_ACTION_FAILED");
   assert.equal((await provenanceStore.verify()).valid, true);
 });
+
+
+test("fails closed when intent provenance persistence fails", async (t) => {
+  const { ledger, checkpoint, provenanceStore: realStore } = await fixture(t);
+  const provenanceStore = {
+    async append(event) {
+      if (event.action === "protected-action.intent-recorded") throw new Error("provenance store unavailable");
+      return realStore.append(event);
+    }
+  };
+  let executed = false;
+  const workflow = createProtectedWorkflow({
+    ledger, checkpoint, provenanceStore,
+    async executeAction() { executed = true; return "must-not-run"; }
+  });
+  await assert.rejects(workflow.run({
+    namespace: "tenant-provenance/fail-intent",
+    actionId: "action-provenance-fail-intent",
+    actionType: "test.write",
+    payload: {}
+  }), /provenance could not be persisted/);
+  assert.equal(executed, false);
+  assert.equal(workflow.isBlocked("tenant-provenance/fail-intent"), true);
+});
+
+test("blocks namespace when outcome provenance persistence fails after execution", async (t) => {
+  const { ledger, checkpoint, provenanceStore: realStore } = await fixture(t);
+  let appendCount = 0;
+  const provenanceStore = {
+    async append(event) {
+      appendCount += 1;
+      if (appendCount === 2) throw new Error("outcome provenance unavailable");
+      return realStore.append(event);
+    }
+  };
+  let executions = 0;
+  const workflow = createProtectedWorkflow({
+    ledger, checkpoint, provenanceStore,
+    async executeAction() { executions += 1; return { mayHaveCompleted: true }; }
+  });
+  await assert.rejects(workflow.run({
+    namespace: "tenant-provenance/fail-outcome",
+    actionId: "action-provenance-fail-outcome",
+    actionType: "test.write",
+    payload: {}
+  }), /provenance could not be persisted/);
+  assert.equal(executions, 1);
+  assert.equal(workflow.isBlocked("tenant-provenance/fail-outcome"), true);
+});
