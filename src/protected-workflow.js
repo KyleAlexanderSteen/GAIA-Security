@@ -173,11 +173,19 @@ export function createProtectedWorkflow({ ledger, checkpoint, executeAction }) {
         actionResult = await executeAction({ namespace, actionId, actionType, payload });
       } catch (error) {
         const failure = { name: error?.name ?? "Error", message: String(error?.message ?? error) };
-        const outcomeRecord = await ledger.append({
-          epochId: namespace,
-          eventType: "protected-action.outcome",
-          payload: { actionId, actionType, status: "failed", intentHash, error: failure }
-        });
+        let outcomeRecord;
+        try {
+          outcomeRecord = await ledger.append({
+            epochId: namespace,
+            eventType: "protected-action.outcome",
+            payload: { actionId, actionType, status: "failed", intentHash, error: failure }
+          });
+        } catch (ledgerError) {
+          blockedNamespaces.add(namespace);
+          throw new ProtectedActionBlockedError("Action failed, but its outcome could not be durably recorded; namespace blocked.", {
+            namespace, actionId, cause: String(ledgerError)
+          });
+        }
         const outcomeEntry = {
           schemaVersion: 1, kind: "outcome", namespace, actionId, actionType,
           intentHash, status: "failed", ledgerRecordHash: outcomeRecord.recordHash,
@@ -195,11 +203,19 @@ export function createProtectedWorkflow({ ledger, checkpoint, executeAction }) {
         throw error;
       }
 
-      const outcomeRecord = await ledger.append({
-        epochId: namespace,
-        eventType: "protected-action.outcome",
-        payload: { actionId, actionType, status: "completed", intentHash, result: actionResult }
-      });
+      let outcomeRecord;
+      try {
+        outcomeRecord = await ledger.append({
+          epochId: namespace,
+          eventType: "protected-action.outcome",
+          payload: { actionId, actionType, status: "completed", intentHash, result: actionResult }
+        });
+      } catch (ledgerError) {
+        blockedNamespaces.add(namespace);
+        throw new ProtectedActionBlockedError("Action may have completed, but its outcome could not be durably recorded; namespace blocked.", {
+          namespace, actionId, actionMayHaveCompleted: true, cause: String(ledgerError)
+        });
+      }
       const outcomeEntry = {
         schemaVersion: 1, kind: "outcome", namespace, actionId, actionType,
         intentHash, status: "completed", ledgerRecordHash: outcomeRecord.recordHash,
