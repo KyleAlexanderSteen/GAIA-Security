@@ -328,3 +328,5 @@ test("blocks namespace when outcome provenance persistence fails after execution
     "protected-action.intent-recorded",
     "protected-action.outcome-reconciled"
   ]);
+  assert.equal((await realStore.verify()).valid, true);
+});
