@@ -77,9 +77,16 @@ export function createProtectedWorkflow({ ledger, checkpoint, executeAction }) {
         if (existing.entryHash === entry.entryHash && existing.kind === entry.kind) {
           return { acknowledged: true, reconciled: true, head: existing.head ?? null };
         }
-        throw new ProtectedActionBlockedError("Action ID already exists with conflicting checkpoint content.", {
+        // A single action advances monotonically from intent to outcome. The
+        // checkpoint service must enforce that transition atomically.
+        if (entry.kind === "outcome" && existing.kind === "intent"
+          && existing.intentHash === entry.intentHash) {
+          // Continue to CAS the outcome against the current authoritative head.
+        } else {
+          throw new ProtectedActionBlockedError("Action ID already exists with conflicting checkpoint content.", {
           namespace, actionId: entry.actionId, kind: entry.kind
-        });
+          });
+        }
       }
 
       const head = await checkpoint.readHead(namespace);
