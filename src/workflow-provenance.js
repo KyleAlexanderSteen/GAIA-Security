@@ -216,7 +216,7 @@ export function verifyWorkflowEventChain(envelopes) {
   else if (gaps.length || unavailableEvidenceCount) status = "partially_verified";
   else if (reconstructedCount) status = "reconstructed";
   else if (envelopes.length === 0 || unverifiedEvidenceCount || unverifiedIdentityCount
-    || envelopes.some(({ event }) => !Array.isArray(event.evidence) || event.evidence.some((item) => item.state !== "verified"))) status = "unverified";
+    || envelopes.some(({ event }) => !event || !Array.isArray(event.evidence) || event.evidence.some((item) => item.state !== "verified"))) status = "unverified";
 
   return {
     status,
