@@ -139,13 +139,62 @@ These are required test cases for a future implementation; this contract PR does
 
 Tests MUST also assert that failure paths do not invoke protected side effects, not merely that an error is thrown.
 
+The action lifecycle MUST also be tested across partial failures. Each protected action should have a stable operation/correlation identifier and explicit states such as `intent-durable`, `checkpoint-acknowledged` (where required), `action-attempted`, `outcome-recorded`, and `reconciliation-required`. The implementation must define which transitions are durable, which may be retried, and how duplicate execution is prevented or detected. An audit record is evidence of a recorded claim; it is not, by itself, proof that an external side effect occurred exactly once.
+
+| ID | Scenario | Required result |
+|---|---|---|
+| CP-16 | Retry the same protected operation after a lost acknowledgement | Stable operation ID and idempotency policy prevent duplicate execution or make the duplicate detectable and reconcilable. |
+| CP-17 | Protected action may have succeeded, but outcome append fails | Block subsequent protected actions, mark reconciliation required, preserve evidence, and do not claim a known outcome. |
+| CP-18 | Two requests submit the same operation ID concurrently | The operation is serialized or deduplicated according to the documented idempotency contract; conflicting payloads for one ID are rejected. |
+| CP-19 | Checkpoint service administrator or signing service is suspected compromised | Follow a separately authorized incident/trust-root recovery path; do not silently trust a new key or rewrite accepted history. |
+| CP-20 | Clock skew or timestamp rollback occurs | Sequence, predecessor, and authenticated state determine freshness; wall-clock time alone cannot authorize rollback or advancement. |
+
 ## 10. Observability and evidence
 
 Every checkpoint publication, acknowledgement, rejection, rollback/fork detection, key-policy rejection, recovery transition, and fail-safe block SHOULD produce a structured audit event containing a correlation ID, ledger ID, expected/observed checkpoint sequence and digest (where safe), reason code, outcome, and actor/service identity. Secrets, private keys, credentials, and sensitive payloads MUST be excluded.
 
 Acceptance evidence should include test output, the selected store's documented consistency/durability semantics, a threat-model review, key lifecycle procedures, and a recovery tabletop or fault-injection record. A green unit-test suite alone is insufficient to claim operational independence.
 
-## 11. Decisions required before implementation
+## 11. Owner-reviewed design baseline
+
+**Owner decision:** The following three choices are approved as the design baseline for implementation planning. This approval does not select a vendor, authorize production deployment, or certify the prototype as production-secure.
+
+### 11.1 Independent checkpoint service
+
+- Use a separately administered service with durable, authenticated reads and a monotonic conditional-update primitive (compare-and-swap or a demonstrably equivalent serialization guarantee).
+- Keep the backend interface provider-neutral and define conformance tests before selecting a provider.
+- Treat immutable/WORM retention as an additional evidence-retention control, not as a substitute for atomic sequencing, fork prevention, or an independently protected trust boundary.
+- Document the actual administrative principals, credentials, recovery path, replication, consistency, retention, and compromise assumptions before calling the service independent.
+
+### 11.2 Checkpoint-signing trust
+
+- Use a dedicated checkpoint-signing identity controlled by the independent service; keep it distinct from record-writer identities.
+- Prefer a managed KMS/HSM-backed signing service only after its key isolation, authorization, audit, availability, and recovery guarantees are verified. The label “KMS” or “HSM” alone is not proof of those guarantees.
+- Distribute the public verification key and authorization policy through authenticated configuration with a trust root independent of the checkpoint ledger itself.
+- Define authenticated rotation, revocation, and emergency trust-root replacement. Routine rotation should prove the new key's possession and authorization through a trusted transition. If compromise is suspected, the possibly compromised old key MUST NOT be the sole authority for approving its replacement.
+- Never place private keys, credentials, or recovery secrets in Git, ledger records, checkpoints, or ordinary logs.
+
+### 11.3 Fail-safe policy
+
+- Fail closed for privileged or high-impact side effects whenever required local durable intent or independent checkpoint acknowledgement is missing.
+- If local intent persistence fails, do not execute the protected action.
+- If a remote acknowledgement is lost, query the authoritative checkpoint head and retry idempotently; do not assume failure, blindly advance, or create a competing history.
+- If the action may have succeeded but its outcome cannot be durably recorded, stop subsequent protected actions, raise an integrity incident, and reconcile the real-world outcome before resuming.
+- Permit read-only or explicitly low-risk degraded operation only under a documented policy that cannot cross into protected side effects.
+- Do not implement an emergency bypass until its authority, scope, duration, evidence requirements, and post-incident review are separately approved.
+
+## 12. Decisions required before implementation
+
+The following remain explicitly **unapproved**:
+
+1. Concrete backend/provider and its administrative/security boundary.
+2. Exact consistency, durability, retention/WORM, replication, and behavior under administrator compromise.
+3. Actual signing-key custody product, key policy, rotation/revocation runbooks, and emergency trust-root procedure.
+4. The operation-class matrix specifying which actions require local durable intent and which require independent acknowledgement before execution.
+5. Retention, privacy minimization, backup, legal hold, and incident-evidence policy.
+6. Human escalation/approval path for unresolved forks and emergency overrides.
+7. Availability and recovery objectives (RPO/RTO) and acceptable degraded-mode behavior.
+8. Idempotency strategy for each protected action and the reconciliation mechanism for actions whose real-world outcome is uncertain.
 
 The following remain explicitly **unapproved**:
 
@@ -157,6 +206,6 @@ The following remain explicitly **unapproved**:
 6. Human escalation/approval path for unresolved forks and emergency overrides.
 7. Availability and recovery objectives (RPO/RTO) and acceptable degraded-mode behavior.
 
-## 12. Definition of done
+## 13. Definition of done
 
 This contract is ready for implementation planning only after owner review of the unresolved decisions. Implementation acceptance requires the CP-01–CP-15 tests (or reviewed equivalents), documented threat-model coverage, tested failure ordering, recovery evidence, and an updated Stage 0 gate report. Passing these tests does not alone establish security against compromise of the independent store, trust roots, or signing authority.
