@@ -77,6 +77,27 @@ test("Merkle checkpoint is signed and verifiable", async (t) => {
   assert.equal(result.anchorCount, 1);
 });
 
+test("anchor verification also validates the signed ledger records", async (t) => {
+  const { ledger, paths } = await fixture(t);
+  await ledger.append({ epochId: "epoch-1", eventType: "test.one", payload: { status: "original" } });
+  await ledger.anchorEpoch("epoch-1");
+  const lines = (await readFile(paths.ledgerPath, "utf8")).trimEnd().split("\\n");
+  const record = JSON.parse(lines[0]);
+  record.payload.status = "tampered-after-anchoring";
+  await writeFile(paths.ledgerPath, JSON.stringify(record) + "\\n");
+  await assert.rejects(() => ledger.verifyAnchors(), /record hash mismatch/);
+});
+
+test("a local checkpoint detects removal of an anchored record", async (t) => {
+  const { ledger, paths } = await fixture(t);
+  await ledger.append({ epochId: "epoch-1", eventType: "test.one", payload: { n: 1 } });
+  await ledger.append({ epochId: "epoch-1", eventType: "test.two", payload: { n: 2 } });
+  await ledger.anchorEpoch("epoch-1");
+  const lines = (await readFile(paths.ledgerPath, "utf8")).trimEnd().split("\\n");
+  await writeFile(paths.ledgerPath, lines[0] + "\\n");
+  await assert.rejects(() => ledger.verifyAnchors(), /Merkle-root mismatch/);
+});
+
 test("unknown or empty epoch cannot be anchored", async (t) => {
   const { ledger } = await fixture(t);
   await assert.rejects(() => ledger.anchorEpoch("missing"), /Cannot anchor empty or unknown epoch/);
