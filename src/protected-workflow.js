@@ -49,15 +49,67 @@ export class ProtectedActionBlockedError extends Error {
   }
 }
 
-export function createProtectedWorkflow({ ledger, checkpoint, executeAction }) {
+export function createProtectedWorkflow({ ledger, checkpoint, executeAction, provenanceStore = null }) {
   if (!ledger?.append || !ledger?.verify || !ledger?.listRecords) throw new TypeError("ledger.append, ledger.verify, and ledger.listRecords are required.");
   if (!checkpoint?.readHead || !checkpoint?.readAction || !checkpoint?.compareAndSet) {
     throw new TypeError("checkpoint.readHead, checkpoint.readAction, and checkpoint.compareAndSet are required.");
   }
   if (typeof executeAction !== "function") throw new TypeError("executeAction must be a function.");
 
+  if (provenanceStore !== null && typeof provenanceStore.append !== "function") {
+    throw new TypeError("provenanceStore.append must be a function when provenanceStore is supplied.");
+  }
+
   const blockedNamespaces = new Set();
   const namespaceQueues = new Map();
+
+  // Provenance is emitted only after the corresponding local audit record exists.
+  // The actor identity is deliberately marked unverified: this runtime does not
+  // independently attest its own workload identity.
+  async function appendProvenance({ namespace, actionId, actionType, phase, outcome, ledgerRecord, error = null }) {
+    if (!provenanceStore) return null;
+    const records = await ledger.listRecords();
+    const priorEvents = records
+      .filter((record) => record.eventType === "workflow.provenance")
+      .map((record) => record.payload?.envelope?.event)
+      .filter((event) => event?.workflow_id === namespace);
+    const previous = priorEvents.at(-1);
+    const event = {
+      schema_version: "0.1.0",
+      event_id: `${namespace}:${actionId}:${phase}`,
+      workflow_id: namespace,
+      transition_id: `${actionId}:${phase}`,
+      sequence: priorEvents.length + 1,
+      occurred_at: new Date().toISOString(),
+      recorded_at: new Date().toISOString(),
+      actor: {
+        kind: "service",
+        subject: "gaia-security/protected-workflow",
+        identity_evidence: { state: "unverified", reference_id: "runtime-identity-not-attested" }
+      },
+      action: phase === "intent"
+        ? "protected-action.intent-recorded"
+        : phase === "recovery"
+          ? "protected-action.outcome-reconciled"
+          : "protected-action.outcome-recorded",
+      resource: { type: "protected-action", id: actionId },
+      policy: null,
+      evidence: [{
+        type: "signed-audit-ledger-record",
+        reference_id: ledgerRecord.recordHash,
+        digest_algorithm: "sha256",
+        digest: ledgerRecord.recordHash,
+        state: "verified"
+      }],
+      artifacts: [],
+      causation_ids: previous ? [previous.event_id] : [],
+      correlation_id: actionId,
+      outcome,
+      failure: error ? { code: "PROTECTED_ACTION_FAILED", message: error.message } : null,
+      integrity: null
+    };
+    return provenanceStore.append(event);
+  }
 
   async function serialized(namespace, task) {
     const previous = namespaceQueues.get(namespace) ?? Promise.resolve();
@@ -167,6 +219,17 @@ export function createProtectedWorkflow({ ledger, checkpoint, executeAction }) {
           namespace, actionId
         });
       }
+      try {
+        await appendProvenance({
+          namespace, actionId, actionType, phase: "intent", outcome: "succeeded",
+          ledgerRecord: intentRecord
+        });
+      } catch (provenanceError) {
+        blockedNamespaces.add(namespace);
+        throw new ProtectedActionBlockedError("Intent was checkpointed, but workflow provenance could not be persisted; namespace blocked.", {
+          namespace, actionId, cause: String(provenanceError)
+        });
+      }
 
       let actionResult;
       try {
@@ -184,6 +247,17 @@ export function createProtectedWorkflow({ ledger, checkpoint, executeAction }) {
           blockedNamespaces.add(namespace);
           throw new ProtectedActionBlockedError("Action failed, but its outcome could not be durably recorded; namespace blocked.", {
             namespace, actionId, cause: String(ledgerError)
+          });
+        }
+        try {
+          await appendProvenance({
+            namespace, actionId, actionType, phase: "outcome", outcome: "failed",
+            ledgerRecord: outcomeRecord, error: failure
+          });
+        } catch (provenanceError) {
+          blockedNamespaces.add(namespace);
+          throw new ProtectedActionBlockedError("Action failed and its provenance could not be persisted; namespace blocked.", {
+            namespace, actionId, cause: String(provenanceError)
           });
         }
         const outcomeEntry = {
@@ -214,6 +288,17 @@ export function createProtectedWorkflow({ ledger, checkpoint, executeAction }) {
         blockedNamespaces.add(namespace);
         throw new ProtectedActionBlockedError("Action may have completed, but its outcome could not be durably recorded; namespace blocked.", {
           namespace, actionId, actionMayHaveCompleted: true, cause: String(ledgerError)
+        });
+      }
+      try {
+        await appendProvenance({
+          namespace, actionId, actionType, phase: "outcome", outcome: "succeeded",
+          ledgerRecord: outcomeRecord
+        });
+      } catch (provenanceError) {
+        blockedNamespaces.add(namespace);
+        throw new ProtectedActionBlockedError("Action may have completed, but its provenance could not be persisted; namespace blocked.", {
+          namespace, actionId, actionMayHaveCompleted: true, cause: String(provenanceError)
         });
       }
       const outcomeEntry = {
@@ -326,6 +411,27 @@ export function createProtectedWorkflow({ ledger, checkpoint, executeAction }) {
         && record.eventType === "protected-action.outcome"
         && record.payload?.actionId === actionId);
       if (!outcomeRecord) throw new ProtectedActionBlockedError("Outcome record is missing after recovery.", { namespace, actionId });
+
+      const existingOutcomeProvenance = (await ledger.listRecords()).some((record) =>
+        record.eventType === "workflow.provenance"
+        && record.payload?.envelope?.event?.workflow_id === namespace
+        && record.payload?.envelope?.event?.resource?.id === actionId
+        && record.payload?.envelope?.event?.action === "protected-action.outcome-recorded");
+      if (!existingOutcomeProvenance) {
+        try {
+          await appendProvenance({
+            namespace, actionId, actionType: checkpointEntry.actionType, phase: "recovery",
+            outcome: outcomePayload.status === "completed" ? "succeeded" : "failed",
+            ledgerRecord: outcomeRecord,
+            error: outcomePayload.status === "failed" ? outcomePayload.error : null
+          });
+        } catch (provenanceError) {
+          blockedNamespaces.add(namespace);
+          throw new ProtectedActionBlockedError("Recovered outcome could not be recorded in workflow provenance; namespace remains blocked.", {
+            namespace, actionId, cause: String(provenanceError)
+          });
+        }
+      }
 
       const outcomeEntry = {
         schemaVersion: 1, kind: "outcome", namespace, actionId,
