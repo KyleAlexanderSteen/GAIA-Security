@@ -87,7 +87,11 @@ export function createProtectedWorkflow({ ledger, checkpoint, executeAction, pro
         subject: "gaia-security/protected-workflow",
         identity_evidence: { state: "unverified", reference_id: "runtime-identity-not-attested" }
       },
-      action: phase === "intent" ? "protected-action.intent-recorded" : "protected-action.outcome-recorded",
+      action: phase === "intent"
+        ? "protected-action.intent-recorded"
+        : phase === "recovery"
+          ? "protected-action.outcome-reconciled"
+          : "protected-action.outcome-recorded",
       resource: { type: "protected-action", id: actionId },
       policy: null,
       evidence: [{
@@ -407,6 +411,27 @@ export function createProtectedWorkflow({ ledger, checkpoint, executeAction, pro
         && record.eventType === "protected-action.outcome"
         && record.payload?.actionId === actionId);
       if (!outcomeRecord) throw new ProtectedActionBlockedError("Outcome record is missing after recovery.", { namespace, actionId });
+
+      const existingOutcomeProvenance = (await ledger.listRecords()).some((record) =>
+        record.eventType === "workflow.provenance"
+        && record.payload?.envelope?.event?.workflow_id === namespace
+        && record.payload?.envelope?.event?.resource?.id === actionId
+        && record.payload?.envelope?.event?.action === "protected-action.outcome-recorded");
+      if (!existingOutcomeProvenance) {
+        try {
+          await appendProvenance({
+            namespace, actionId, actionType: checkpointEntry.actionType, phase: "recovery",
+            outcome: outcomePayload.status === "completed" ? "succeeded" : "failed",
+            ledgerRecord: outcomeRecord,
+            error: outcomePayload.status === "failed" ? outcomePayload.error : null
+          });
+        } catch (provenanceError) {
+          blockedNamespaces.add(namespace);
+          throw new ProtectedActionBlockedError("Recovered outcome could not be recorded in workflow provenance; namespace remains blocked.", {
+            namespace, actionId, cause: String(provenanceError)
+          });
+        }
+      }
 
       const outcomeEntry = {
         schemaVersion: 1, kind: "outcome", namespace, actionId,
