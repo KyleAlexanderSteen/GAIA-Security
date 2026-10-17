@@ -112,8 +112,9 @@ test("blocks the namespace if the action ran but outcome checkpoint is uncertain
   );
   assert.equal(calls, 1);
   assert.equal(workflow.isBlocked("tenant-a/ledger-a"), true);
-  assert.throws(
-    () => workflow.clearBlockAfterVerifiedReconciliation("tenant-a/ledger-a", { verified: true, reference: "incident-123" }),
-    // Synchronous method should clear only after evidence; this call is valid.
+  assert.equal(
+    workflow.clearBlockAfterVerifiedReconciliation("tenant-a/ledger-a", { verified: true, reference: "incident-123" }),
+    true
   );
+  assert.equal(workflow.isBlocked("tenant-a/ledger-a"), false);
 });
