@@ -97,7 +97,7 @@ test("action failure is recorded as a failed provenance outcome", async (t) => {
   assert.equal(events.length, 2);
   assert.equal(events[1].outcome, "failed");
   assert.equal(events[1].failure.code, "PROTECTED_ACTION_FAILED");
-  assert.equal((await provenanceStore.verify()).valid, true);
+  assert.equal((await realStore.verify()).valid, true);
 });
 
 
