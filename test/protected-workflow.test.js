@@ -2,11 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createProtectedWorkflow, ProtectedActionBlockedError } from "../src/protected-workflow.js";
 
-function fakeLedger() {
+function fakeLedger({ failOutcome = false } = {}) {
   const records = [];
   return {
     records,
     async append(record) {
+      if (failOutcome && record.eventType === "protected-action.outcome") throw new Error("ledger outcome write failed");
       const item = { ...record, recordHash: `local-${records.length + 1}` };
       records.push(item);
       return item;
@@ -117,4 +118,18 @@ test("blocks the namespace if the action ran but outcome checkpoint is uncertain
     true
   );
   assert.equal(workflow.isBlocked("tenant-a/ledger-a"), false);
+});
+
+
+test("blocks namespace if the local outcome audit write fails after action execution", async () => {
+  const ledger = fakeLedger({ failOutcome: true });
+  const checkpoint = fakeCheckpoint();
+  let calls = 0;
+  const workflow = createProtectedWorkflow({ ledger, checkpoint, async executeAction() { calls += 1; return "may-have-completed"; } });
+  await assert.rejects(
+    workflow.run({ namespace: "tenant-a/ledger-a", actionId: "action-006", actionType: "protected.write", payload: {} }),
+    /outcome could not be durably recorded/
+  );
+  assert.equal(calls, 1);
+  assert.equal(workflow.isBlocked("tenant-a/ledger-a"), true);
 });
