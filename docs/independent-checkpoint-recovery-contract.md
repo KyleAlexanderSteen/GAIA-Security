@@ -40,6 +40,8 @@ The implementation SHALL:
 
 - The independent checkpoint boundary and its trust roots are not writable by the same principal that can rewrite the local ledger. If an attacker controls both boundaries or compromises the trusted signing authority, this contract alone cannot guarantee detection.
 - A remote service is not considered independent merely because it uses a different URL. Its credentials, administration plane, retention controls, and recovery path must be assessed for shared compromise.
+- If the checkpoint service or its administrator is in the threat model as potentially malicious, a single service's signed answer cannot prove that it has not equivocated to different clients. Evaluate an independently administered witness, transparency log, or cross-client checkpoint gossip as a separate mitigation; define its costs and availability impact before making it mandatory.
+- If multiple GAIA instances, tenants, or environments share the service, ledger identity, authorization scope, and checkpoint namespace MUST be isolated and validated on every read and write. Cross-ledger substitution must be rejected.
 - This document does not select a cloud provider, WORM product, HSM/KMS, consensus protocol, retention period, or key quorum. Those are owner-reviewed decisions.
 - This is not a certification, proof of complete containment, or claim that the existing prototype meets these requirements.
 
@@ -55,6 +57,10 @@ Each externally accepted checkpoint SHALL contain, at minimum:
 - signer key identifier and signature over a canonical representation of all security-relevant fields.
 
 The exact wire format and canonicalization rules must be versioned. The signature MUST cover the ledger identity, sequence, predecessor digest, record count, head hash, epoch/range, Merkle root, and signer key identifier.
+
+Canonicalization MUST be deterministic and unambiguous: specify character encoding, field ordering, number representation, optional/null handling, and hash/signature algorithms in a versioned format. Signatures and hashes MUST use domain separation so that a value valid for one purpose (for example, a writer record) cannot be reinterpreted as a checkpoint or a different protocol message. Reject duplicate fields, unknown critical fields, invalid encodings, and non-canonical representations rather than guessing how to parse them. Algorithm identifiers MUST be policy-checked; an input record must not be allowed to downgrade verification to a weaker algorithm.
+
+The verifier MUST enforce an explicit freshness policy for the remote checkpoint response. A correctly signed but stale cached response is not proof of the latest head. The service interface must define how the client establishes freshness (for example, an authenticated uncached read or a challenge-bound response) and what happens when freshness cannot be established. Wall-clock timestamps may support diagnostics or bounded-age policies, but cannot replace monotonic state and predecessor checks.
 
 The independent store SHALL provide an authenticated read and a durable monotonic update primitive. Updates MUST be conditional on the expected current checkpoint sequence/digest (compare-and-swap or an equivalent serialization guarantee). It MUST reject stale writers and conflicting successors instead of silently overwriting the accepted checkpoint. The store's acknowledged durability and retention guarantees must be documented and tested.
 
@@ -148,6 +154,10 @@ The action lifecycle MUST also be tested across partial failures. Each protected
 | CP-18 | Two requests submit the same operation ID concurrently | The operation is serialized or deduplicated according to the documented idempotency contract; conflicting payloads for one ID are rejected. |
 | CP-19 | Checkpoint service administrator or signing service is suspected compromised | Follow a separately authorized incident/trust-root recovery path; do not silently trust a new key or rewrite accepted history. |
 | CP-20 | Clock skew or timestamp rollback occurs | Sequence, predecessor, and authenticated state determine freshness; wall-clock time alone cannot authorize rollback or advancement. |
+| CP-21 | Two different clients receive conflicting signed checkpoints from a compromised or equivocating service | Detect through the selected witness/transparency/gossip control where configured; otherwise document that this threat is not covered by a single-service design. |
+| CP-22 | A valid but stale signed checkpoint response is replayed | Freshness policy rejects it or prevents protected work until the current head is established. |
+| CP-23 | A checkpoint for another ledger or tenant is substituted | Ledger identity and authorization scope checks reject it; no state advances. |
+| CP-24 | Equivalent data is encoded in multiple ambiguous forms or a weaker algorithm is requested | Non-canonical/duplicate-field input and disallowed algorithm downgrade are rejected deterministically. |
 
 ## 10. Observability and evidence
 
@@ -195,17 +205,9 @@ The following remain explicitly **unapproved**:
 6. Human escalation/approval path for unresolved forks and emergency overrides.
 7. Availability and recovery objectives (RPO/RTO) and acceptable degraded-mode behavior.
 8. Idempotency strategy for each protected action and the reconciliation mechanism for actions whose real-world outcome is uncertain.
-
-The following remain explicitly **unapproved**:
-
-1. Independent checkpoint backend and its administrative/security boundary.
-2. Whether the backend guarantees conditional monotonic writes, retention/WORM, independent replication, and what those guarantees mean under administrator compromise.
-3. Trust-root and signing-key custody, rotation, revocation, and emergency recovery.
-4. Which operation classes require external checkpoint acknowledgement before execution.
-5. Retention, privacy minimization, backup, legal hold, and incident-evidence policy.
-6. Human escalation/approval path for unresolved forks and emergency overrides.
-7. Availability and recovery objectives (RPO/RTO) and acceptable degraded-mode behavior.
+9. Whether the threat model requires an independent witness/transparency mechanism to detect a checkpoint service that equivocates to different clients.
+10. Freshness requirements, maximum acceptable checkpoint response age, and the concrete protocol used to establish a current authoritative head.
 
 ## 13. Definition of done
 
-This contract is ready for implementation planning only after owner review of the unresolved decisions. Implementation acceptance requires the CP-01–CP-15 tests (or reviewed equivalents), documented threat-model coverage, tested failure ordering, recovery evidence, and an updated Stage 0 gate report. Passing these tests does not alone establish security against compromise of the independent store, trust roots, or signing authority.
+This contract is ready for implementation planning only after owner review of the unresolved decisions. Implementation acceptance requires CP-01–CP-24 (or reviewed equivalents), documented threat-model coverage, deterministic encoding/signature conformance vectors, tested failure ordering, freshness and cross-ledger isolation tests, recovery evidence, and an updated Stage 0 gate report. If independent witnessing is not selected, the documented residual risk must explicitly state that a single checkpoint service may be unable to detect its own equivocation. Passing tests does not alone establish security against compromise of the independent store, trust roots, or signing authority.
