@@ -23,6 +23,7 @@ function fakeCheckpoint({ failIntent = false, loseFirstAck = false, failOutcome 
   const heads = new Map();
   const actions = new Map();
   let calls = 0;
+  let outcomeUnavailable = failOutcome;
   const key = (namespace, actionId) => `${namespace}\0${actionId}`;
   return {
     actions,
