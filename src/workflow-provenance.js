@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 
 const EVIDENCE_STATES = new Set(["verified", "reconstructed", "unverified", "unavailable", "invalid"]);
 const OUTCOMES = new Set(["succeeded", "failed", "denied", "approval_required", "cancelled", "unknown"]);
-const VERIFICATION_STATES = new Set(["verified", "partially_verified", "reconstructed", "unverified", "invalid"]);
 const ZERO_DIGEST = "0".repeat(64);
 
 function canonicalize(value) {
@@ -152,6 +151,8 @@ export function verifyWorkflowEventChain(envelopes) {
   let reconstructedCount = 0;
   let invalidEvidenceCount = 0;
   let unavailableEvidenceCount = 0;
+  let unverifiedEvidenceCount = 0;
+  let unverifiedIdentityCount = 0;
 
   for (let index = 0; index < envelopes.length; index += 1) {
     const envelope = envelopes[index];
@@ -161,6 +162,10 @@ export function verifyWorkflowEventChain(envelopes) {
       continue;
     }
     const { event, previous_event_digest: claimedPrevious, event_digest: claimedDigest } = envelope;
+    if (!event || typeof event !== "object" || Array.isArray(event)) {
+      errors.push(`Envelope ${line}: event must be an object.`);
+      continue;
+    }
     const validation = validateWorkflowEvent(event);
     if (!validation.valid) errors.push(...validation.errors.map((error) => `Envelope ${line}: ${error}`));
     if (claimedPrevious !== previousDigest) errors.push(`Envelope ${line}: chain link mismatch (reordered, missing, or altered predecessor).`);
@@ -192,7 +197,10 @@ export function verifyWorkflowEventChain(envelopes) {
       if (reference?.state === "reconstructed") reconstructedCount += 1;
       if (reference?.state === "invalid") invalidEvidenceCount += 1;
       if (reference?.state === "unavailable") unavailableEvidenceCount += 1;
+      if (reference?.state === "unverified") unverifiedEvidenceCount += 1;
     }
+    const identityState = event.actor?.identity_evidence?.state;
+    if (identityState !== "verified") unverifiedIdentityCount += 1;
     previousDigest = typeof claimedDigest === "string" ? claimedDigest : previousDigest;
   }
 
@@ -200,13 +208,15 @@ export function verifyWorkflowEventChain(envelopes) {
   if (reconstructedCount) warnings.push("Reconstructed evidence is present and is not equivalent to contemporaneous verified evidence.");
   if (unavailableEvidenceCount) warnings.push("One or more evidence references are unavailable.");
   if (invalidEvidenceCount) warnings.push("One or more evidence references are explicitly marked invalid.");
+  if (unverifiedEvidenceCount) warnings.push("One or more evidence references are explicitly unverified.");
+  if (unverifiedIdentityCount) warnings.push("Actor/workload identity evidence is not explicitly verified for one or more events.");
 
   let status = "verified";
   if (errors.length || invalidEvidenceCount) status = "invalid";
   else if (gaps.length || unavailableEvidenceCount) status = "partially_verified";
   else if (reconstructedCount) status = "reconstructed";
-  else if (envelopes.length === 0) status = "unverified";
-  else if (envelopes.some(({ event }) => event.evidence.some((item) => item.state !== "verified"))) status = "unverified";
+  else if (envelopes.length === 0 || unverifiedEvidenceCount || unverifiedIdentityCount
+    || envelopes.some(({ event }) => !Array.isArray(event.evidence) || event.evidence.some((item) => item.state !== "verified"))) status = "unverified";
 
   return {
     status,
@@ -218,7 +228,7 @@ export function verifyWorkflowEventChain(envelopes) {
       digest_chain: { passed: !errors.some((error) => error.includes("chain link") || error.includes("digest mismatch")) },
       unique_event_ids: { passed: !errors.some((error) => error.includes("duplicate event_id")) },
       causal_completeness: { passed: !gaps.some((gap) => gap.missing_causation_event_id) },
-      evidence_state_preserved: { passed: true }
+      evidence_state_preserved: { passed: invalidEvidenceCount === 0 && unavailableEvidenceCount === 0 && unverifiedEvidenceCount === 0 }
     },
     errors,
     gaps,
