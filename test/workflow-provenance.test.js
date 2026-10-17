@@ -19,7 +19,7 @@ function event(overrides = {}) {
     actor: {
       kind: "service",
       subject: "issuer.example/workload/test",
-      identity_evidence: { state: "unverified", reference_id: "identity-ref-1" }
+      identity_evidence: { state: "verified", reference_id: "identity-ref-1" }
     },
     action: "workflow.test",
     resource: { type: "test-resource", id: "resource-1" },
@@ -134,7 +134,7 @@ test("rejects a non-finite value before creating an envelope", () => {
 });
 
 test("does not claim full verification when actor identity evidence is unverified", () => {
-  const result = verifyWorkflowEventChain(chain([event()]));
+  const result = verifyWorkflowEventChain(chain([event({ actor: { kind: "service", subject: "issuer.example/workload/test", identity_evidence: { state: "unverified", reference_id: "identity-ref-1" } })]));
   assert.equal(result.status, "unverified");
   assert.ok(result.warnings.some((warning) => warning.includes("identity evidence")));
 });
