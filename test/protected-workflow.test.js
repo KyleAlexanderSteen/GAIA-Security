@@ -174,7 +174,7 @@ test("recovery refuses to guess or execute when target outcome is unknown", asyn
     actionType: "protected.write", intentHash, ledgerRecordHash: intentRecord.recordHash,
     createdAt: new Date().toISOString(), entryHash: "b".repeat(64)
   };
-  checkpoint.actions.set([namespace, actionId].join("\\0"), intentEntry);
+  checkpoint.actions.set([namespace, actionId].join("\0"), intentEntry);
   let executed = false;
   const workflow = createProtectedWorkflow({ ledger, checkpoint, async executeAction() { executed = true; } });
   await assert.rejects(
