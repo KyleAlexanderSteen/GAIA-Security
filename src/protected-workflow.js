@@ -50,7 +50,7 @@ export class ProtectedActionBlockedError extends Error {
 }
 
 export function createProtectedWorkflow({ ledger, checkpoint, executeAction }) {
-  if (!ledger?.append || !ledger?.verify) throw new TypeError("ledger.append and ledger.verify are required.");
+  if (!ledger?.append || !ledger?.verify || !ledger?.listRecords) throw new TypeError("ledger.append, ledger.verify, and ledger.listRecords are required.");
   if (!checkpoint?.readHead || !checkpoint?.readAction || !checkpoint?.compareAndSet) {
     throw new TypeError("checkpoint.readHead, checkpoint.readAction, and checkpoint.compareAndSet are required.");
   }
@@ -235,6 +235,119 @@ export function createProtectedWorkflow({ ledger, checkpoint, executeAction }) {
     });
   }
 
+  async function recover({ namespace, actionId, reconcileAction }) {
+    if (typeof namespace !== "string" || !namespace.trim()) throw new TypeError("namespace is required.");
+    if (typeof actionId !== "string" || !actionId.trim()) throw new TypeError("actionId is required.");
+
+    return serialized(namespace, async () => {
+      const checkpointEntry = await checkpoint.readAction(namespace, actionId);
+      if (!checkpointEntry) {
+        throw new ProtectedActionBlockedError("No authoritative checkpoint intent exists; recovery cannot safely infer or execute an action.", {
+          namespace, actionId
+        });
+      }
+      if (checkpointEntry.kind === "outcome") {
+        if (checkpointEntry.status !== "completed" && checkpointEntry.status !== "failed") {
+          throw new ProtectedActionBlockedError("Checkpoint outcome has an unsupported state.", { namespace, actionId });
+        }
+        blockedNamespaces.delete(namespace);
+        return { actionId, status: "already-reconciled", outcome: checkpointEntry.status };
+      }
+      if (checkpointEntry.kind !== "intent") {
+        throw new ProtectedActionBlockedError("Checkpoint entry has an unsupported lifecycle state.", { namespace, actionId });
+      }
+
+      const ledgerState = await ledger.verify();
+      if (!ledgerState?.valid) throw new ProtectedActionBlockedError("Local ledger failed verification; recovery is blocked.", { namespace, actionId });
+      const records = await ledger.listRecords();
+      const matching = records.filter((record) => record.epochId === namespace
+        && record.payload?.actionId === actionId);
+      const intentRecord = matching.find((record) => record.eventType === "protected-action.intent");
+      if (!intentRecord || intentRecord.payload?.intentHash !== checkpointEntry.intentHash) {
+        throw new ProtectedActionBlockedError("Verified local intent is missing or conflicts with the independent checkpoint.", {
+          namespace, actionId
+        });
+      }
+
+      const existingOutcome = matching.find((record) => record.eventType === "protected-action.outcome");
+      let outcomePayload;
+      if (existingOutcome) {
+        // Prefer the durable, verified local outcome over re-querying or re-executing.
+        outcomePayload = existingOutcome.payload;
+      } else {
+        if (typeof reconcileAction !== "function") {
+          throw new ProtectedActionBlockedError("Action outcome is unknown. Supply an authoritative target-system reconciliation callback; execution will not be repeated.", {
+            namespace, actionId
+          });
+        }
+        const result = await reconcileAction({
+          namespace, actionId, actionType: checkpointEntry.actionType,
+          intentHash: checkpointEntry.intentHash, payload: intentRecord.payload.payload
+        });
+        if (!result || !["completed", "failed", "unknown"].includes(result.status)) {
+          throw new TypeError("reconcileAction must return status completed, failed, or unknown.");
+        }
+        if (result.status === "unknown") {
+          blockedNamespaces.add(namespace);
+          throw new ProtectedActionBlockedError("Target system cannot establish the action outcome; namespace remains blocked.", {
+            namespace, actionId, evidenceReference: result.evidence?.reference ?? null
+          });
+        }
+        if (result.evidence?.verified !== true
+          || typeof result.evidence.reference !== "string"
+          || !result.evidence.reference.trim()) {
+          throw new ProtectedActionBlockedError("Target-system reconciliation requires verified evidence and a reference.", {
+            namespace, actionId
+          });
+        }
+        outcomePayload = {
+          actionId, actionType: checkpointEntry.actionType,
+          status: result.status, intentHash: checkpointEntry.intentHash,
+          ...(result.status === "completed" ? { result: result.result } : { error: result.error ?? { name: "ReconciledFailure", message: "Target system confirms failure." } }),
+          reconciliation: { reference: result.evidence.reference }
+        };
+        try {
+          await ledger.append({ epochId: namespace, eventType: "protected-action.outcome", payload: outcomePayload });
+        } catch (error) {
+          blockedNamespaces.add(namespace);
+          throw new ProtectedActionBlockedError("Reconciled outcome could not be durably recorded in the local ledger.", {
+            namespace, actionId, cause: String(error)
+          });
+        }
+      }
+
+      if (outcomePayload.intentHash !== checkpointEntry.intentHash
+        || !["completed", "failed"].includes(outcomePayload.status)) {
+        throw new ProtectedActionBlockedError("Local outcome does not match the checkpointed intent or has an invalid status.", {
+          namespace, actionId
+        });
+      }
+      const outcomeRecord = (await ledger.listRecords()).find((record) => record.epochId === namespace
+        && record.eventType === "protected-action.outcome"
+        && record.payload?.actionId === actionId);
+      if (!outcomeRecord) throw new ProtectedActionBlockedError("Outcome record is missing after recovery.", { namespace, actionId });
+
+      const outcomeEntry = {
+        schemaVersion: 1, kind: "outcome", namespace, actionId,
+        actionType: checkpointEntry.actionType, intentHash: checkpointEntry.intentHash,
+        status: outcomePayload.status, ledgerRecordHash: outcomeRecord.recordHash,
+        ...(outcomePayload.status === "completed" ? { result: outcomePayload.result } : { error: outcomePayload.error }),
+        ...(outcomePayload.reconciliation ? { reconciliation: outcomePayload.reconciliation } : {}),
+        createdAt: outcomeRecord.timestamp ?? new Date().toISOString()
+      };
+      outcomeEntry.entryHash = digest(outcomeEntry);
+      const acknowledgement = await commitEntry(namespace, outcomeEntry);
+      if (!acknowledgement.acknowledged) {
+        blockedNamespaces.add(namespace);
+        throw new ProtectedActionBlockedError("Recovered outcome is not durably checkpointed; namespace remains blocked.", {
+          namespace, actionId
+        });
+      }
+      blockedNamespaces.delete(namespace);
+      return { actionId, status: "recovered", outcome: outcomePayload.status, checkpoint: acknowledgement };
+    });
+  }
+
   function isBlocked(namespace) {
     return blockedNamespaces.has(namespace);
   }
@@ -250,7 +363,7 @@ export function createProtectedWorkflow({ ledger, checkpoint, executeAction }) {
     return true;
   }
 
-  return Object.freeze({ run, isBlocked, clearBlockAfterVerifiedReconciliation });
+  return Object.freeze({ run, recover, isBlocked, clearBlockAfterVerifiedReconciliation });
 }
 
 export const protectedWorkflowInternals = Object.freeze({ stableJson, digest, MAX_CAS_ATTEMPTS });
