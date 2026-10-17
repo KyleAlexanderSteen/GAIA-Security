@@ -18,3 +18,14 @@
 This prototype's digest chain is **not a digital signature or proof of actor identity**. It does not provide durable storage, an external trust anchor, independent checkpointing, key lifecycle management, concurrency control, or protection against an attacker who can rewrite the entire chain. It does not make a claim that all issue #320 acceptance criteria are complete.
 
 The contract and implementation are provisional until the owner reviews the proposed schema/profile. No production service integration or external side effect is included. The tests must pass in CI before this PR is considered verified.
+
+
+## Signed-ledger integration added
+
+`src/workflow-provenance-store.js` now provides `createWorkflowProvenanceStore({ ledger })`. It stores validated provenance envelopes as `workflow.provenance` records in the existing signed audit ledger, verifies ledger integrity before reading, serializes appends within one store instance, enforces per-workflow sequence progression, and verifies after persistence.
+
+Coverage in `test/workflow-provenance-store.test.js` includes signed-ledger persistence, concurrent calls within one instance, sequence rejection, and detection of tampered ledger records.
+
+### Integration boundary
+
+The adapter is not yet wired into `createProtectedWorkflow`. The underlying ledger remains a single-process-writer local-file prototype, and the adapter does not provide multi-process locking or an independent external checkpoint. Identity states are declarations rather than authenticated identity proofs, and evidence source digests are not independently fetched or verified. These limits must remain visible until the corresponding controls are implemented and tested.
